@@ -83,6 +83,14 @@ export const VTConfigSchema = z.object({
       ]),
     })
     .optional(),
+  gitAutoCommit: z
+    .object({
+      enabled: z.union([
+        z.boolean(),
+        z.enum(["true", "false"]).transform((val) => val === "true"),
+      ]),
+    })
+    .optional(),
   editorTemplate: z.string().optional(), // a Val URI
 });
 
@@ -93,6 +101,9 @@ export const DefaultVTConfig: z.infer<typeof VTConfigSchema> = {
   globalIgnoreFiles: [join(GLOBAL_VT_CONFIG_PATH, META_IGNORE_FILE_NAME)],
   dangerousOperations: {
     confirmation: true,
+  },
+  gitAutoCommit: {
+    enabled: true,
   },
   editorTemplate: DEFAULT_EDITOR_TEMPLATE,
 };
