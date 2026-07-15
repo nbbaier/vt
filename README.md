@@ -241,6 +241,30 @@ If you are using a custom domain or for some reason automatic connection does
 not work, you can pin the browser extension, and then right click it, and press
 the "Connect to VT" button.
 
+### Automatic Git Commits
+
+If you keep your Val in a git repository, `vt` can snapshot your work for you.
+Whenever a `vt pull` or `vt push` finishes, `vt` automatically creates a git
+commit with the freshly synced files, so your git history mirrors your Val Town
+history.
+
+This is enabled by default **only when the Val folder is inside a git
+repository** — if it isn't, `vt` does nothing and stays quiet. You can control
+the behavior per invocation with a pair of flags on both `pull` and `push`:
+
+- `--git-commit` forces a commit (and warns if you're not in a git repo).
+- `--no-git-commit` skips the commit even inside a git repo.
+
+```sh
+vt push                 # commits automatically when in a git repo
+vt pull --no-git-commit # pull without touching git
+vt push --git-commit    # be explicit about committing
+```
+
+Only changes in the Val folder are staged and committed, so anything you've
+already staged elsewhere in the repository is left alone. If there is nothing
+new to commit, no empty commit is created.
+
 ### Branching Out
 
 One common Val Town Val workflow is branching out. `vt`'s `checkout` and

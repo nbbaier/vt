@@ -6,6 +6,7 @@ import { tty } from "@cliffy/ansi/tty";
 import { colors } from "@cliffy/ansi/colors";
 import { displayFileStateChanges } from "~/cmd/lib/utils/displayFileStatus.ts";
 import { noChangesDryRunMsg } from "~/cmd/lib/utils/messages.ts";
+import { reportGitAutoCommit } from "~/cmd/lib/utils/gitAutoCommit.ts";
 
 export const pullCmd = new Command()
   .name("pull")
@@ -16,13 +17,29 @@ export const pullCmd = new Command()
     "-d, --dry-run",
     "Show what would be pulled without making any changes",
   )
-  .action(({ force, dryRun }: { force?: boolean; dryRun?: boolean }) => {
+  .option(
+    "--git-commit",
+    "Create a git commit after pulling (default: enabled when in a git repo)",
+    { default: undefined },
+  )
+  .option(
+    "--no-git-commit",
+    "Do not create a git commit after pulling",
+  )
+  .action((
+    { force, dryRun, gitCommit }: {
+      force?: boolean;
+      dryRun?: boolean;
+      gitCommit?: boolean;
+    },
+  ) => {
     doWithSpinner(
       dryRun
         ? "Checking for remote changes that would be pulled..."
         : "Pulling latest changes...",
       async (spinner) => {
-        const vt = VTClient.from(await findVtRoot(Deno.cwd()));
+        const vtRoot = await findVtRoot(Deno.cwd());
+        const vt = VTClient.from(vtRoot);
 
         // Check if dirty, then early exit if it's dirty and they don't
         // want to proceed. If in force mode don't do this check.
@@ -92,6 +109,12 @@ export const pullCmd = new Command()
             includeSummary: true,
           }));
           console.log();
+
+          // Once the pull has resolved, optionally create a git commit. Enabled
+          // automatically inside a git repo; toggle with --git-commit /
+          // --no-git-commit.
+          await reportGitAutoCommit(vtRoot, "pull", gitCommit);
+
           spinner.succeed("Successfully pulled the latest changes");
         }
       },
