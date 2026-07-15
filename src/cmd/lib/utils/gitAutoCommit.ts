@@ -2,8 +2,9 @@
  * Helpers for creating an automated git commit after a `vt pull` or `vt push`.
  *
  * The feature is opt-out: when the Val directory lives inside a git working
- * tree, a commit is created automatically once the sync resolves. Callers can
- * force the behavior on or off with the `gitCommit` tri-state (see
+ * tree, a commit is created automatically once the sync resolves. It can be
+ * turned off persistently via the `gitAutoCommit.enabled` config key, and
+ * overridden per-invocation with the `gitCommit` tri-state (see
  * {@link maybeGitAutoCommit}).
  */
 
@@ -26,6 +27,11 @@ export interface GitAutoCommitOptions {
    * is always excluded regardless of this list.
    */
   ignoreRules?: string[];
+  /**
+   * The resolved `gitAutoCommit.enabled` config value, consulted only when the
+   * `gitCommit` tri-state is `undefined`. Defaults to enabled when unset.
+   */
+  configEnabled?: boolean;
 }
 
 /** The outcome of an auto-commit attempt, for display and testing. */
@@ -177,11 +183,14 @@ export function gitAutoCommitMessage(
 /**
  * Create an automated git commit for the changes in `dir` after a sync.
  *
- * Behavior is governed by the `gitCommit` tri-state:
- * - `undefined` (default): commit only when `dir` is inside a git repo.
- * - `true`: force a commit; a no-op (with `not-a-repo`) when `dir` is not in a
- *   git repo.
- * - `false`: never commit.
+ * Behavior is governed by the `gitCommit` tri-state, which maps to the
+ * `--git-commit` / `--no-git-commit` flags:
+ * - `undefined` (no flag): defer to `options.configEnabled` (the
+ *   `gitAutoCommit.enabled` config key), which defaults to enabled. Commits
+ *   only when `dir` is inside a git repo.
+ * - `true` (`--git-commit`): commit even if the config disabled it; a no-op
+ *   (with `not-a-repo`) when `dir` is not in a git repo.
+ * - `false` (`--no-git-commit`): never commit.
  *
  * Only changes in the Val subtree are considered, and VT metadata (the `.vt`
  * folder) plus anything matched by the supplied VT ignore rules are filtered
@@ -201,10 +210,16 @@ export async function maybeGitAutoCommit(
   gitCommit: boolean | undefined,
   options: GitAutoCommitOptions = {},
 ): Promise<GitAutoCommitResult> {
-  const { message: customMessage, ignoreRules = [] } = options;
+  const { message: customMessage, ignoreRules = [], configEnabled } = options;
 
-  // Explicitly disabled.
+  // Explicitly disabled with --no-git-commit.
   if (gitCommit === false) return { status: "disabled" };
+
+  // With no flag, the config decides (defaulting to enabled). An explicit
+  // --git-commit overrides a config-level disable for this one invocation.
+  if (gitCommit === undefined && configEnabled === false) {
+    return { status: "disabled" };
+  }
 
   // Auto mode and forced mode both require an actual git repo.
   if (!(await isInsideGitRepo(dir))) return { status: "not-a-repo" };
@@ -243,9 +258,10 @@ export async function maybeGitAutoCommit(
  * the outcome.
  *
  * In automatic mode (`gitCommit` is `undefined`) nothing is printed unless a
- * commit is actually made, so users who aren't using git never see noise. When
- * the commit was explicitly requested with `--git-commit`, cases that produced
- * no commit are surfaced as warnings so the request isn't silently ignored.
+ * commit is actually made, so users who aren't using git, or who disabled the
+ * feature via config, never see noise. When the commit was explicitly requested
+ * with `--git-commit`, cases that produced no commit are surfaced as warnings
+ * so the request isn't silently ignored.
  *
  * @param dir The Val directory whose changes should be committed.
  * @param operation The sync operation that triggered the commit.

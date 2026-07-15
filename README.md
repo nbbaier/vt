@@ -249,11 +249,21 @@ commit with the freshly synced files, so your git history mirrors your Val Town
 history.
 
 This is enabled by default **only when the Val folder is inside a git
-repository** — if it isn't, `vt` does nothing and stays quiet. You can control
-the behavior per invocation with a pair of flags on both `pull` and `push`:
+repository** — if it isn't, `vt` does nothing and stays quiet.
 
-- `--git-commit` forces a commit (and warns if you're not in a git repo).
+To turn it off permanently, set the `gitAutoCommit.enabled` config option:
+
+```sh
+vt config set gitAutoCommit.enabled false           # everywhere
+vt config set --local gitAutoCommit.enabled false   # just this Val
+```
+
+You can also control the behavior per invocation with a pair of flags on both
+`pull` and `push`:
+
 - `--no-git-commit` skips the commit even inside a git repo.
+- `--git-commit` commits even when `gitAutoCommit.enabled` is `false`, and warns
+  if no commit was made (for example, if you're not in a git repo).
 
 By default the commit message is `vt <pull|push> <timestamp>` (for example
 `vt push 2026-07-15T12:34:56.789Z`). Use `-m` / `--message` to set your own
@@ -262,7 +272,7 @@ message instead.
 ```sh
 vt push                          # commits as "vt push <timestamp>" when in a git repo
 vt pull --no-git-commit          # pull without touching git
-vt push --git-commit             # be explicit about committing
+vt push --git-commit             # commit despite gitAutoCommit.enabled being false
 vt push -m "ship new endpoint"   # commit with a custom message
 ```
 
@@ -310,6 +320,9 @@ Right now, we offer the following configuration options:
 
 - `dangerousOperations.confirmation`: Whether to do confirmations on actions
   that might cause you to lose local state, like `vt pull`.
+- `gitAutoCommit.enabled`: Whether to automatically create a git commit after a
+  `vt pull` or `vt push` when the Val folder is inside a git repository. See
+  [Automatic Git Commits](#automatic-git-commits).
 - `editorTemplate`: The Val URI for the editor files that you are prompted about
   when you run a `vt clone`, `vt remix`, or `vt create`.
 

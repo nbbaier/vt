@@ -19,7 +19,7 @@ export const pullCmd = new Command()
   )
   .option(
     "--git-commit",
-    "Create a git commit after pulling (default: enabled when in a git repo)",
+    "Create a git commit after pulling, even if gitAutoCommit.enabled is false",
     { default: undefined },
   )
   .option(
@@ -116,11 +116,14 @@ export const pullCmd = new Command()
           console.log();
 
           // Once the pull has resolved, optionally create a git commit. Enabled
-          // automatically inside a git repo; toggle with --git-commit /
+          // automatically inside a git repo; disable persistently with
+          // `gitAutoCommit.enabled`, or per-run with --git-commit /
           // --no-git-commit.
+          const config = await vt.getConfig().loadConfig();
           await reportGitAutoCommit(vtRoot, "pull", gitCommit, {
             message,
             ignoreRules: await vt.getMeta().loadGitignoreRules(),
+            configEnabled: config.gitAutoCommit?.enabled,
           });
 
           spinner.succeed("Successfully pulled the latest changes");

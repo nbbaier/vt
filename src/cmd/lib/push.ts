@@ -20,7 +20,7 @@ export const pushCmd = new Command()
   )
   .option(
     "--git-commit",
-    "Create a git commit after pushing (default: enabled when in a git repo)",
+    "Create a git commit after pushing, even if gitAutoCommit.enabled is false",
     { default: undefined },
   )
   .option(
@@ -90,11 +90,14 @@ export const pushCmd = new Command()
               Deno.exit(1);
             } else {
               // Once the push has resolved, optionally create a git commit.
-              // Enabled automatically inside a git repo; toggle with --git-commit
-              // / --no-git-commit.
+              // Enabled automatically inside a git repo; disable persistently
+              // with `gitAutoCommit.enabled`, or per-run with --git-commit /
+              // --no-git-commit.
+              const config = await vt.getConfig().loadConfig();
               await reportGitAutoCommit(vtRoot, "push", gitCommit, {
                 message,
                 ignoreRules: await vt.getMeta().loadGitignoreRules(),
+                configEnabled: config.gitAutoCommit?.enabled,
               });
 
               spinner.succeed("Successfully pushed local changes");

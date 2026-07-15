@@ -74,6 +74,61 @@ Deno.test("--no-git-commit disables committing", async () => {
   });
 });
 
+Deno.test("gitAutoCommit.enabled false disables committing", async () => {
+  await doWithTempDir(async (tmpDir) => {
+    await initRepo(tmpDir);
+    await Deno.writeTextFile(join(tmpDir, "main.ts"), "console.log('hi');");
+
+    const result = await maybeGitAutoCommit(tmpDir, "push", undefined, {
+      configEnabled: false,
+    });
+    assertEquals(result.status, "disabled");
+
+    // Nothing was committed, so the new file is still untracked.
+    const status = await git(tmpDir, ["status", "--porcelain"]);
+    assertEquals(status, "?? main.ts");
+  });
+});
+
+Deno.test("--git-commit overrides a config-level disable", async () => {
+  await doWithTempDir(async (tmpDir) => {
+    await initRepo(tmpDir);
+    await Deno.writeTextFile(join(tmpDir, "main.ts"), "console.log('hi');");
+
+    const result = await maybeGitAutoCommit(tmpDir, "push", true, {
+      configEnabled: false,
+    });
+    assertEquals(result.status, "committed");
+
+    const committed = await git(tmpDir, ["ls-files"]);
+    assertEquals(committed, "main.ts");
+  });
+});
+
+Deno.test("--no-git-commit wins over gitAutoCommit.enabled true", async () => {
+  await doWithTempDir(async (tmpDir) => {
+    await initRepo(tmpDir);
+    await Deno.writeTextFile(join(tmpDir, "main.ts"), "console.log('hi');");
+
+    const result = await maybeGitAutoCommit(tmpDir, "push", false, {
+      configEnabled: true,
+    });
+    assertEquals(result.status, "disabled");
+  });
+});
+
+Deno.test("gitAutoCommit.enabled true commits in auto mode", async () => {
+  await doWithTempDir(async (tmpDir) => {
+    await initRepo(tmpDir);
+    await Deno.writeTextFile(join(tmpDir, "main.ts"), "console.log('hi');");
+
+    const result = await maybeGitAutoCommit(tmpDir, "pull", undefined, {
+      configEnabled: true,
+    });
+    assertEquals(result.status, "committed");
+  });
+});
+
 Deno.test("nothing-to-commit when tree is clean", async () => {
   await doWithTempDir(async (tmpDir) => {
     await initRepo(tmpDir);
