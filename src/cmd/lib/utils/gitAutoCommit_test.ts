@@ -108,7 +108,7 @@ Deno.test("a custom message overrides the default", async () => {
       tmpDir,
       "push",
       undefined,
-      "my custom snapshot",
+      { message: "my custom snapshot" },
     );
     assertEquals(result.status, "committed");
     assert(result.status === "committed");
@@ -128,4 +128,80 @@ Deno.test("gitAutoCommitMessage builds vt <op> <timestamp>", () => {
     gitAutoCommitMessage("push", "2026-07-15T12:34:56.789Z"),
     "vt push 2026-07-15T12:34:56.789Z",
   );
+});
+
+Deno.test("VT metadata is never committed", async () => {
+  await doWithTempDir(async (tmpDir) => {
+    await initRepo(tmpDir);
+    // A real Val file alongside VT metadata that git does not ignore.
+    await Deno.writeTextFile(join(tmpDir, "main.ts"), "console.log('hi');");
+    await Deno.mkdir(join(tmpDir, ".vt"));
+    await Deno.writeTextFile(join(tmpDir, ".vt", "state.json"), "{}");
+    await Deno.writeTextFile(join(tmpDir, ".vt", "config.yaml"), "apiKey: x");
+
+    const result = await maybeGitAutoCommit(tmpDir, "push", undefined);
+    assertEquals(result.status, "committed");
+
+    // The Val file is committed; the .vt metadata is not.
+    const committed = await git(tmpDir, ["ls-files"]);
+    assertEquals(committed, "main.ts");
+
+    // The metadata is still present but untracked.
+    const status = await git(tmpDir, ["status", "--porcelain"]);
+    assertMatch(status, /\?\? \.vt\//);
+  });
+});
+
+Deno.test("VT ignore rules keep ignored files out of the commit", async () => {
+  await doWithTempDir(async (tmpDir) => {
+    await initRepo(tmpDir);
+    await Deno.writeTextFile(join(tmpDir, "main.ts"), "console.log('hi');");
+    await Deno.writeTextFile(join(tmpDir, "secret.env"), "TOKEN=abc");
+
+    // secret.env is ignored by VT but not by git.
+    const result = await maybeGitAutoCommit(tmpDir, "push", undefined, {
+      ignoreRules: ["secret.env"],
+    });
+    assertEquals(result.status, "committed");
+
+    const committed = await git(tmpDir, ["ls-files"]);
+    assertEquals(committed, "main.ts");
+  });
+});
+
+Deno.test("a metadata-only change produces no commit", async () => {
+  await doWithTempDir(async (tmpDir) => {
+    await initRepo(tmpDir);
+    await Deno.writeTextFile(join(tmpDir, "main.ts"), "console.log('hi');");
+    await git(tmpDir, ["add", "-A"]);
+    await git(tmpDir, ["commit", "-q", "-m", "initial"]);
+
+    // Simulate what a no-op sync does: rewrite only VT metadata.
+    await Deno.mkdir(join(tmpDir, ".vt"));
+    await Deno.writeTextFile(
+      join(tmpDir, ".vt", "state.json"),
+      '{"updated":true}',
+    );
+
+    const result = await maybeGitAutoCommit(tmpDir, "pull", undefined);
+    assertEquals(result.status, "nothing-to-commit");
+  });
+});
+
+Deno.test("the Val root can be nested below the git repo root", async () => {
+  await doWithTempDir(async (tmpDir) => {
+    await initRepo(tmpDir);
+    const valDir = join(tmpDir, "myval");
+    await Deno.mkdir(valDir);
+    await Deno.writeTextFile(join(valDir, "main.ts"), "console.log('hi');");
+    await Deno.mkdir(join(valDir, ".vt"));
+    await Deno.writeTextFile(join(valDir, ".vt", "state.json"), "{}");
+
+    // Commit is scoped to the nested Val directory, metadata excluded.
+    const result = await maybeGitAutoCommit(valDir, "push", undefined);
+    assertEquals(result.status, "committed");
+
+    const committed = await git(tmpDir, ["ls-files"]);
+    assertEquals(committed, "myval/main.ts");
+  });
 });

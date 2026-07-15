@@ -27,15 +27,15 @@ export const pullCmd = new Command()
     "Do not create a git commit after pulling",
   )
   .option(
-    "-m, --commit-message <message:string>",
+    "-m, --message <message:string>",
     "Message for the auto-commit (default: vt pull <timestamp>)",
   )
   .action((
-    { force, dryRun, gitCommit, commitMessage }: {
+    { force, dryRun, gitCommit, message }: {
       force?: boolean;
       dryRun?: boolean;
       gitCommit?: boolean;
-      commitMessage?: string;
+      message?: string;
     },
   ) => {
     doWithSpinner(
@@ -118,7 +118,10 @@ export const pullCmd = new Command()
           // Once the pull has resolved, optionally create a git commit. Enabled
           // automatically inside a git repo; toggle with --git-commit /
           // --no-git-commit.
-          await reportGitAutoCommit(vtRoot, "pull", gitCommit, commitMessage);
+          await reportGitAutoCommit(vtRoot, "pull", gitCommit, {
+            message,
+            ignoreRules: await vt.getMeta().loadGitignoreRules(),
+          });
 
           spinner.succeed("Successfully pulled the latest changes");
         }

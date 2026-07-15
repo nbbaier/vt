@@ -256,8 +256,8 @@ the behavior per invocation with a pair of flags on both `pull` and `push`:
 - `--no-git-commit` skips the commit even inside a git repo.
 
 By default the commit message is `vt <pull|push> <timestamp>` (for example
-`vt push 2026-07-15T12:34:56.789Z`). Use `-m` / `--commit-message` to set your
-own message instead.
+`vt push 2026-07-15T12:34:56.789Z`). Use `-m` / `--message` to set your own
+message instead.
 
 ```sh
 vt push                          # commits as "vt push <timestamp>" when in a git repo
@@ -267,8 +267,11 @@ vt push -m "ship new endpoint"   # commit with a custom message
 ```
 
 Only changes in the Val folder are staged and committed, so anything you've
-already staged elsewhere in the repository is left alone. If there is nothing
-new to commit, no empty commit is created.
+already staged elsewhere in the repository is left alone. VT's own metadata (the
+`.vt` folder, including `state.json` and a local `.vt/config.yaml`) and anything
+matched by your `.vtignore` rules are never committed, so a no-op sync won't
+create a metadata-only commit. If there is nothing new to commit, no empty
+commit is created.
 
 ### Branching Out
 

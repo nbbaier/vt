@@ -8,9 +8,25 @@
  */
 
 import { colors } from "@cliffy/ansi/colors";
+import { shouldIgnore } from "~/vt/lib/paths.ts";
+import { META_FOLDER_NAME } from "~/consts.ts";
 
 /** The kind of sync operation that triggered the commit. */
 export type GitAutoCommitOperation = "pull" | "push";
+
+/**
+ * Options controlling how {@link maybeGitAutoCommit} behaves.
+ */
+export interface GitAutoCommitOptions {
+  /** Message overriding the default `vt <operation> <timestamp>`. */
+  message?: string;
+  /**
+   * VT ignore rules (from `VTMeta.loadGitignoreRules()`) used to keep VT
+   * metadata and VT-ignored files out of the commit. The `.vt` metadata folder
+   * is always excluded regardless of this list.
+   */
+  ignoreRules?: string[];
+}
 
 /** The outcome of an auto-commit attempt, for display and testing. */
 export type GitAutoCommitResult =
@@ -44,6 +60,81 @@ async function runGit(
     stdout: new TextDecoder().decode(stdout).trim(),
     stderr: new TextDecoder().decode(stderr).trim(),
   };
+}
+
+/**
+ * Collect the paths under `dir` (the Val root) that have working-tree changes,
+ * filtered to exclude VT metadata (the `.vt` folder) and anything matched by
+ * the VT ignore rules. Returned paths are relative to `dir`, matching how VT
+ * ignore rules are authored.
+ *
+ * `git status` already honors the repo's own `.gitignore`, so this only needs
+ * to additionally drop paths that git tracks but VT deliberately ignores (for
+ * example `.vt/state.json`, a local `.vt/config.yaml`, or `.vtignore`d files).
+ *
+ * @param dir The Val root directory.
+ * @param ignoreRules VT ignore rules to filter against.
+ * @returns The Val-root-relative paths that should be staged.
+ */
+async function collectPathsToStage(
+  dir: string,
+  ignoreRules: string[],
+): Promise<string[]> {
+  // Path of the Val root relative to the git repo root, e.g. "myval/" (empty
+  // when the Val root *is* the repo root). `git status` reports paths relative
+  // to the repo root, so we strip this prefix to get Val-root-relative paths.
+  const { stdout: prefix } = await runGit(dir, ["rev-parse", "--show-prefix"]);
+
+  // NUL-delimited porcelain status of the Val subtree, with untracked files
+  // expanded individually rather than collapsed to their parent directory.
+  const command = new Deno.Command("git", {
+    args: [
+      "status",
+      "--porcelain",
+      "-z",
+      "--untracked-files=all",
+      "--",
+      ".",
+    ],
+    cwd: dir,
+    stdout: "piped",
+    stderr: "piped",
+  });
+  const { success, stdout } = await command.output();
+  if (!success) return [];
+
+  const tokens = new TextDecoder().decode(stdout).split("\0");
+
+  // Always keep VT's own metadata folder out, even if the caller passed no
+  // ignore rules.
+  const rules = [META_FOLDER_NAME, ...ignoreRules];
+
+  const paths: string[] = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (token === "") continue;
+
+    // Each record is "XY <path>"; the two status columns are followed by a
+    // space and the repo-root-relative path.
+    const status = token.slice(0, 2);
+    const repoRelPath = token.slice(3);
+
+    // Renames/copies encode "R"/"C" and carry the original path in the next
+    // NUL-separated token; consume it so it isn't parsed as a status record.
+    if (status.includes("R") || status.includes("C")) i++;
+
+    // Convert to a Val-root-relative path for both ignore matching and staging.
+    const relPath = prefix && repoRelPath.startsWith(prefix)
+      ? repoRelPath.slice(prefix.length)
+      : repoRelPath;
+
+    if (relPath === "") continue;
+    if (shouldIgnore(relPath, rules)) continue;
+
+    paths.push(relPath);
+  }
+
+  return paths;
 }
 
 /**
@@ -92,42 +183,40 @@ export function gitAutoCommitMessage(
  *   git repo.
  * - `false`: never commit.
  *
- * Only the current directory subtree is staged (`git add -A -- .`) and only
- * those paths are committed, so pre-existing staged changes elsewhere in the
- * repo are left untouched. When there is nothing to commit the function is a
- * no-op.
+ * Only changes in the Val subtree are considered, and VT metadata (the `.vt`
+ * folder) plus anything matched by the supplied VT ignore rules are filtered
+ * out before staging. Only the explicitly staged paths are committed, so
+ * pre-existing staged changes elsewhere in the repo are left untouched. When
+ * there is nothing (left) to commit the function is a no-op.
  *
  * @param dir The Val directory whose changes should be committed.
  * @param operation The sync operation that triggered the commit.
  * @param gitCommit The tri-state controlling whether to commit.
- * @param customMessage Optional message overriding the default
- * `vt <operation> <timestamp>` commit message.
+ * @param options Optional message override and VT ignore rules.
  * @returns A result describing what happened.
  */
 export async function maybeGitAutoCommit(
   dir: string,
   operation: GitAutoCommitOperation,
   gitCommit: boolean | undefined,
-  customMessage?: string,
+  options: GitAutoCommitOptions = {},
 ): Promise<GitAutoCommitResult> {
+  const { message: customMessage, ignoreRules = [] } = options;
+
   // Explicitly disabled.
   if (gitCommit === false) return { status: "disabled" };
 
   // Auto mode and forced mode both require an actual git repo.
   if (!(await isInsideGitRepo(dir))) return { status: "not-a-repo" };
 
-  // Stage everything under the current directory subtree.
-  await runGit(dir, ["add", "-A", "--", "."]);
+  // Figure out which changed paths to stage, dropping VT metadata and
+  // VT-ignored files so we never commit `.vt/state.json`, a local
+  // `.vt/config.yaml`, or `.vtignore`d files.
+  const pathsToStage = await collectPathsToStage(dir, ignoreRules);
+  if (pathsToStage.length === 0) return { status: "nothing-to-commit" };
 
-  // If nothing is staged for these paths, there is nothing to commit.
-  const { success: nothingStaged } = await runGit(dir, [
-    "diff",
-    "--cached",
-    "--quiet",
-    "--",
-    ".",
-  ]);
-  if (nothingStaged) return { status: "nothing-to-commit" };
+  // Stage exactly those paths (`-A` so deletions are staged too).
+  await runGit(dir, ["add", "-A", "--", ...pathsToStage]);
 
   const message = customMessage && customMessage.length > 0
     ? customMessage
@@ -137,7 +226,7 @@ export async function maybeGitAutoCommit(
     "-m",
     message,
     "--",
-    ".",
+    ...pathsToStage,
   ]);
 
   if (!success) {
@@ -161,22 +250,16 @@ export async function maybeGitAutoCommit(
  * @param dir The Val directory whose changes should be committed.
  * @param operation The sync operation that triggered the commit.
  * @param gitCommit The tri-state controlling whether to commit.
- * @param customMessage Optional message overriding the default
- * `vt <operation> <timestamp>` commit message.
+ * @param options Optional message override and VT ignore rules.
  * @returns The result of the auto-commit attempt.
  */
 export async function reportGitAutoCommit(
   dir: string,
   operation: GitAutoCommitOperation,
   gitCommit: boolean | undefined,
-  customMessage?: string,
+  options: GitAutoCommitOptions = {},
 ): Promise<GitAutoCommitResult> {
-  const result = await maybeGitAutoCommit(
-    dir,
-    operation,
-    gitCommit,
-    customMessage,
-  );
+  const result = await maybeGitAutoCommit(dir, operation, gitCommit, options);
   const forced = gitCommit === true;
 
   switch (result.status) {
