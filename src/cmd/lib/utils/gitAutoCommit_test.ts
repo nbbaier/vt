@@ -1,7 +1,11 @@
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals, assertMatch } from "@std/assert";
 import { doWithTempDir } from "~/vt/lib/utils/misc.ts";
 import { join } from "@std/path";
-import { isInsideGitRepo, maybeGitAutoCommit } from "./gitAutoCommit.ts";
+import {
+  gitAutoCommitMessage,
+  isInsideGitRepo,
+  maybeGitAutoCommit,
+} from "./gitAutoCommit.ts";
 
 /** Run a git command in a directory, asserting it succeeds. */
 async function git(cwd: string, args: string[]): Promise<string> {
@@ -42,8 +46,9 @@ Deno.test("auto mode commits when in a git repo", async () => {
     const status = await git(tmpDir, ["status", "--porcelain"]);
     assertEquals(status, "");
 
+    // Default message is "vt <operation> <timestamp>".
     const log = await git(tmpDir, ["log", "-1", "--pretty=%s"]);
-    assertEquals(log, "vt: auto-commit after pull");
+    assertMatch(log, /^vt pull \d{4}-\d{2}-\d{2}T[\d:.]+Z$/);
   });
 });
 
@@ -90,6 +95,37 @@ Deno.test("push commit message differs from pull", async () => {
     assertEquals(result.status, "committed");
 
     const log = await git(tmpDir, ["log", "-1", "--pretty=%s"]);
-    assertEquals(log, "vt: auto-commit after push");
+    assertMatch(log, /^vt push \d{4}-\d{2}-\d{2}T[\d:.]+Z$/);
   });
+});
+
+Deno.test("a custom message overrides the default", async () => {
+  await doWithTempDir(async (tmpDir) => {
+    await initRepo(tmpDir);
+    await Deno.writeTextFile(join(tmpDir, "main.ts"), "console.log('hi');");
+
+    const result = await maybeGitAutoCommit(
+      tmpDir,
+      "push",
+      undefined,
+      "my custom snapshot",
+    );
+    assertEquals(result.status, "committed");
+    assert(result.status === "committed");
+    assertEquals(result.message, "my custom snapshot");
+
+    const log = await git(tmpDir, ["log", "-1", "--pretty=%s"]);
+    assertEquals(log, "my custom snapshot");
+  });
+});
+
+Deno.test("gitAutoCommitMessage builds vt <op> <timestamp>", () => {
+  assertEquals(
+    gitAutoCommitMessage("pull", "2026-07-15T12:34:56.789Z"),
+    "vt pull 2026-07-15T12:34:56.789Z",
+  );
+  assertEquals(
+    gitAutoCommitMessage("push", "2026-07-15T12:34:56.789Z"),
+    "vt push 2026-07-15T12:34:56.789Z",
+  );
 });

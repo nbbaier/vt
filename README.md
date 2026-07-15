@@ -255,10 +255,15 @@ the behavior per invocation with a pair of flags on both `pull` and `push`:
 - `--git-commit` forces a commit (and warns if you're not in a git repo).
 - `--no-git-commit` skips the commit even inside a git repo.
 
+By default the commit message is `vt <pull|push> <timestamp>` (for example
+`vt push 2026-07-15T12:34:56.789Z`). Use `-m` / `--commit-message` to set your
+own message instead.
+
 ```sh
-vt push                 # commits automatically when in a git repo
-vt pull --no-git-commit # pull without touching git
-vt push --git-commit    # be explicit about committing
+vt push                          # commits as "vt push <timestamp>" when in a git repo
+vt pull --no-git-commit          # pull without touching git
+vt push --git-commit             # be explicit about committing
+vt push -m "ship new endpoint"   # commit with a custom message
 ```
 
 Only changes in the Val folder are staged and committed, so anything you've

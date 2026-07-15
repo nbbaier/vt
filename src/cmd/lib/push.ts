@@ -27,9 +27,17 @@ export const pushCmd = new Command()
     "--no-git-commit",
     "Do not create a git commit after pushing",
   )
+  .option(
+    "-m, --commit-message <message:string>",
+    "Message for the auto-commit (default: vt push <timestamp>)",
+  )
   .action(
     async (
-      { dryRun, gitCommit }: { dryRun?: boolean; gitCommit?: boolean },
+      { dryRun, gitCommit, commitMessage }: {
+        dryRun?: boolean;
+        gitCommit?: boolean;
+        commitMessage?: string;
+      },
     ) => {
       await doWithSpinner(
         dryRun
@@ -84,7 +92,12 @@ export const pushCmd = new Command()
               // Once the push has resolved, optionally create a git commit.
               // Enabled automatically inside a git repo; toggle with --git-commit
               // / --no-git-commit.
-              await reportGitAutoCommit(vtRoot, "push", gitCommit);
+              await reportGitAutoCommit(
+                vtRoot,
+                "push",
+                gitCommit,
+                commitMessage,
+              );
 
               spinner.succeed("Successfully pushed local changes");
             }

@@ -68,17 +68,19 @@ export async function isInsideGitRepo(dir: string): Promise<boolean> {
 }
 
 /**
- * Build the commit message used for an automated commit.
+ * Build the default commit message used for an automated commit, of the form
+ * `vt <operation> <timestamp>` (e.g. `vt push 2026-07-15T12:34:56.789Z`).
  *
  * @param operation The sync operation that produced the changes.
+ * @param timestamp The timestamp to embed. Defaults to the current time as an
+ * ISO 8601 string.
  * @returns The commit message.
  */
 export function gitAutoCommitMessage(
   operation: GitAutoCommitOperation,
+  timestamp: string = new Date().toISOString(),
 ): string {
-  return operation === "pull"
-    ? "vt: auto-commit after pull"
-    : "vt: auto-commit after push";
+  return `vt ${operation} ${timestamp}`;
 }
 
 /**
@@ -98,12 +100,15 @@ export function gitAutoCommitMessage(
  * @param dir The Val directory whose changes should be committed.
  * @param operation The sync operation that triggered the commit.
  * @param gitCommit The tri-state controlling whether to commit.
+ * @param customMessage Optional message overriding the default
+ * `vt <operation> <timestamp>` commit message.
  * @returns A result describing what happened.
  */
 export async function maybeGitAutoCommit(
   dir: string,
   operation: GitAutoCommitOperation,
   gitCommit: boolean | undefined,
+  customMessage?: string,
 ): Promise<GitAutoCommitResult> {
   // Explicitly disabled.
   if (gitCommit === false) return { status: "disabled" };
@@ -124,7 +129,9 @@ export async function maybeGitAutoCommit(
   ]);
   if (nothingStaged) return { status: "nothing-to-commit" };
 
-  const message = gitAutoCommitMessage(operation);
+  const message = customMessage && customMessage.length > 0
+    ? customMessage
+    : gitAutoCommitMessage(operation);
   const { success, stderr } = await runGit(dir, [
     "commit",
     "-m",
@@ -154,14 +161,22 @@ export async function maybeGitAutoCommit(
  * @param dir The Val directory whose changes should be committed.
  * @param operation The sync operation that triggered the commit.
  * @param gitCommit The tri-state controlling whether to commit.
+ * @param customMessage Optional message overriding the default
+ * `vt <operation> <timestamp>` commit message.
  * @returns The result of the auto-commit attempt.
  */
 export async function reportGitAutoCommit(
   dir: string,
   operation: GitAutoCommitOperation,
   gitCommit: boolean | undefined,
+  customMessage?: string,
 ): Promise<GitAutoCommitResult> {
-  const result = await maybeGitAutoCommit(dir, operation, gitCommit);
+  const result = await maybeGitAutoCommit(
+    dir,
+    operation,
+    gitCommit,
+    customMessage,
+  );
   const forced = gitCommit === true;
 
   switch (result.status) {
