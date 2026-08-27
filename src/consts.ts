@@ -81,11 +81,13 @@ export const STATUS_STYLES: Record<
   created: { prefix: "A", color: colors.green },
   deleted: { prefix: "D", color: colors.red },
   not_modified: { prefix: " ", color: colors.gray },
+  conflicted: { prefix: "!", color: colors.brightRed },
 };
 
 export const WARNING_MESSAGES: Record<ItemWarning, string> = {
   bad_name: "Invalid file name",
   binary: "File has binary content",
+  conflict: "File has unresolved merge conflict markers",
   empty: "File is empty",
   too_large: "File is too large",
 };

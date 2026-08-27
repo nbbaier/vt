@@ -50,14 +50,24 @@ export const statusCmd = new Command()
         includeStatuses: false,
       }));
 
-      if (statusResult.changes() > 0) {
+      if (statusResult.conflicted.length > 0) {
         console.log();
         console.log(
           wrap(
-            `Your local state differs from the website. \`${PROGRAM_NAME}\` cannot yet automatically sync differences. ` +
-              `In order to sync your state, you must either:\n\n` +
-              `- Push all of your changes to Val Town by using \`vt push\`\n` +
-              `- Pull all your changes from the website using \`vt pull\`\n\n` +
+            `Some files changed both locally and on the website. Run \`${PROGRAM_NAME} pull\` ` +
+              `to merge the remote changes into your local files; edits that ` +
+              `cannot be merged automatically will be marked with conflict ` +
+              `markers for you to resolve before pushing.`,
+            { width: DEFAULT_WRAP_WIDTH, indent: "" },
+          ),
+        );
+      } else if (statusResult.changes() > 0) {
+        console.log();
+        console.log(
+          wrap(
+            `Your local state differs from the website. To sync your state, you can either:\n\n` +
+              `- Push your local changes to Val Town using \`vt push\`\n` +
+              `- Pull the remote changes from the website using \`vt pull\`\n\n` +
               `You can simulate a push or pull by including \`--dry-run\`.`,
             { width: DEFAULT_WRAP_WIDTH, indent: "" },
           ),

@@ -9,12 +9,15 @@ import {
 } from "~/consts.ts";
 import { basename } from "@std/path";
 import { hasNullBytes } from "~/utils.ts";
+import { containsConflictMarkers } from "~/vt/lib/utils/merge.ts";
+import type { ConflictKind } from "~/vt/lib/utils/threeWayDiff.ts";
 
 /**
  * Possible warning states for a Val item.
  *
  * @property bad_name - The item has an invalid name format
  * @property binary - The item contains binary content
+ * @property conflict - The item contains unresolved merge conflict markers
  * @property empty - The item is empty (0 bytes)
  * @property too_large - The item exceeds maximum allowed size
  * @property unknown - An unspecified warning with additional information (e.g. API errors)
@@ -22,6 +25,7 @@ import { hasNullBytes } from "~/utils.ts";
 export type ItemWarning =
   | "bad_name"
   | "binary"
+  | "conflict"
   | "empty"
   | "too_large"
   | `unknown: ${string}`;
@@ -50,13 +54,15 @@ export interface ItemInfo {
  * @property modified - The item's content has been changed
  * @property not_modified - The item exists but has not been changed
  * @property renamed - The item has been moved/renamed (also implies modification)
+ * @property conflicted - The item changed both locally and remotely in incompatible ways
  */
 export type ItemStatusState =
   | "deleted"
   | "created"
   | "modified"
   | "not_modified"
-  | "renamed";
+  | "renamed"
+  | "conflicted";
 
 /**
  * Base interface for all item status types, combining item information with status.
@@ -74,6 +80,12 @@ export type ModifiedItemStatus = BaseItemStatus & {
   status: "modified";
   /** Specifies whether the modification happened locally or remotely */
   where: "local" | "remote";
+  /**
+   * Set when a pull auto-merged concurrent local and remote edits cleanly.
+   * The content is the diff3 result and should be treated as an ordinary
+   * (pushable) modification; the flag only informs display.
+   */
+  merged?: boolean;
 };
 
 /**
@@ -90,6 +102,8 @@ export type NotModifiedItemStatus = BaseItemStatus & {
 export type DeletedItemStatus = BaseItemStatus & {
   /** Indicates this item has been deleted */
   status: "deleted";
+  /** Specifies whether the deletion happened locally or remotely */
+  where: "local" | "remote";
 };
 
 /**
@@ -98,6 +112,26 @@ export type DeletedItemStatus = BaseItemStatus & {
 export type CreatedItemStatus = BaseItemStatus & {
   /** Indicates this item has been newly created */
   status: "created";
+  /** Specifies whether the creation happened locally or remotely */
+  where: "local" | "remote";
+};
+
+/**
+ * An item that changed both locally and remotely in ways that cannot be
+ * combined automatically. Conflicted items are never pushed or overwritten
+ * by a pull; they must be resolved by the user first.
+ */
+export type ConflictedItemStatus = BaseItemStatus & {
+  /** Indicates this item is in a conflicted state */
+  status: "conflicted";
+  /** The shape of the conflict */
+  conflictKind: ConflictKind;
+  /** The content at the merge base, when it exists and is textual */
+  baseContent?: string;
+  /** The local content, when the local file exists and is textual */
+  localContent?: string;
+  /** The remote content, when the remote file exists and is textual */
+  remoteContent?: string;
 };
 
 /**
@@ -121,7 +155,8 @@ export type ItemStatus =
   | NotModifiedItemStatus
   | DeletedItemStatus
   | CreatedItemStatus
-  | RenamedItemStatus;
+  | RenamedItemStatus
+  | ConflictedItemStatus;
 
 /**
  * Class for managing file state changes with operations for creating,
@@ -133,6 +168,7 @@ export class ItemStatusManager {
   #deleted: Map<string, DeletedItemStatus>;
   #created: Map<string, CreatedItemStatus>;
   #renamed: Map<string, RenamedItemStatus>;
+  #conflicted: Map<string, ConflictedItemStatus>;
 
   /**
    * Create a new ItemStatusManager.
@@ -146,6 +182,7 @@ export class ItemStatusManager {
       deleted?: DeletedItemStatus[];
       created?: CreatedItemStatus[];
       renamed?: RenamedItemStatus[];
+      conflicted?: ConflictedItemStatus[];
     }>,
   ) {
     this.#modified = new Map(
@@ -162,6 +199,9 @@ export class ItemStatusManager {
     );
     this.#renamed = new Map(
       (initialState?.renamed || []).map((file) => [file.path, file]),
+    );
+    this.#conflicted = new Map(
+      (initialState?.conflicted || []).map((file) => [file.path, file]),
     );
   }
 
@@ -185,6 +225,10 @@ export class ItemStatusManager {
     return Array.from(this.#renamed.values());
   }
 
+  get conflicted(): ConflictedItemStatus[] {
+    return Array.from(this.#conflicted.values());
+  }
+
   /**
    * Returns the total number of files across all status categories.
    *
@@ -206,6 +250,7 @@ export class ItemStatusManager {
       ...this.modified,
       ...this.not_modified,
       ...this.renamed,
+      ...this.conflicted,
     ];
   }
 
@@ -277,10 +322,11 @@ export class ItemStatusManager {
 
       // 3. Status type priority
       const statusPriority: Record<string, number> = {
-        "created": 0,
-        "deleted": 1,
-        "modified": 2,
-        "not_modified": 3,
+        "conflicted": 0,
+        "created": 1,
+        "deleted": 2,
+        "modified": 3,
+        "not_modified": 4,
       };
       const aPriority = statusPriority[aCategory];
       const bPriority = statusPriority[bCategory];
@@ -344,6 +390,11 @@ export class ItemStatusManager {
       return true;
     }
 
+    if (this.#conflicted.has(path)) {
+      this.#conflicted.delete(path);
+      return true;
+    }
+
     return false;
   }
 
@@ -359,8 +410,9 @@ export class ItemStatusManager {
         // Check if there's a deleted file with the same path
         if (this.#deleted.has(item.path)) {
           this.#deleted.delete(item.path);
-          // If it was deleted and created relative to the remote it was a local modification
-          item = { ...item, status: "modified", where: "local" };
+          // A delete and a create of the same path is a modification on the
+          // side that performed the pair of operations
+          item = { ...item, status: "modified", where: item.where };
           this.#modified.set(item.path, item as ModifiedItemStatus);
         } else {
           this.#created.set(item.path, item as CreatedItemStatus);
@@ -370,8 +422,9 @@ export class ItemStatusManager {
         // Check if there's a created file with the same path
         if (this.#created.has(item.path)) {
           this.#created.delete(item.path);
-          // If it was deleted and created relative to the remote it was a local modification
-          item = { ...item, status: "modified", where: "local" };
+          // A delete and a create of the same path is a modification on the
+          // side that performed the pair of operations
+          item = { ...item, status: "modified", where: item.where };
           this.#modified.set(item.path, item as ModifiedItemStatus);
         } else {
           this.#deleted.set(item.path, item as DeletedItemStatus);
@@ -391,6 +444,9 @@ export class ItemStatusManager {
       case "not_modified":
         this.#not_modified.set(item.path, item as NotModifiedItemStatus);
         break;
+      case "conflicted":
+        this.#conflicted.set(item.path, item as ConflictedItemStatus);
+        break;
     }
 
     return this;
@@ -409,6 +465,7 @@ export class ItemStatusManager {
     if (this.#deleted.has(path)) return this.#deleted.get(path)!;
     if (this.#created.has(path)) return this.#created.get(path)!;
     if (this.#renamed.has(path)) return this.#renamed.get(path)!;
+    if (this.#conflicted.has(path)) return this.#conflicted.get(path)!;
 
     throw new Error(`Item with path "${path}" not found`);
   }
@@ -436,6 +493,8 @@ export class ItemStatusManager {
       existingItem = this.#created.get(path);
     } else if (this.#renamed.has(path)) {
       existingItem = this.#renamed.get(path);
+    } else if (this.#conflicted.has(path)) {
+      existingItem = this.#conflicted.get(path);
     }
 
     if (!existingItem) {
@@ -460,9 +519,13 @@ export class ItemStatusManager {
   public consolidateRenames(): this {
     const processed = new Set<string>();
 
+    // Rename detection only applies to changes made on the local side; a
+    // remote delete + remote create pair is applied as-is by pull
     const deletedItems = Array.from(this.deleted)
+      .filter((item) => item.where === "local")
       .sort((a, b) => b.mtime - a.mtime);
     const createdItems = Array.from(this.created)
+      .filter((item) => item.where === "local")
       .sort((a, b) => b.mtime - a.mtime);
 
     for (const oldItem of deletedItems) {
@@ -572,6 +635,7 @@ export class ItemStatusManager {
     for (const file of source.not_modified) sourcePaths.add(file.path);
     for (const file of source.deleted) sourcePaths.add(file.path);
     for (const file of source.created) sourcePaths.add(file.path);
+    for (const file of source.conflicted) sourcePaths.add(file.path);
 
     // Remove any existing files with paths in the source
     for (const path of sourcePaths) {
@@ -579,6 +643,7 @@ export class ItemStatusManager {
       this.#not_modified.delete(path);
       this.#deleted.delete(path);
       this.#created.delete(path);
+      this.#conflicted.delete(path);
     }
 
     // Now insert all files from the source
@@ -587,6 +652,7 @@ export class ItemStatusManager {
     for (const file of source.deleted) this.insert(file);
     for (const file of source.created) this.insert(file);
     for (const file of source.renamed) this.insert(file);
+    for (const file of source.conflicted) this.insert(file);
 
     return this;
   }
@@ -619,6 +685,10 @@ export class ItemStatusManager {
     }
 
     for (const file of this.renamed) {
+      if (predicate(file)) result.insert(file);
+    }
+
+    for (const file of this.conflicted) {
       if (predicate(file)) result.insert(file);
     }
 
@@ -657,6 +727,10 @@ export class ItemStatusManager {
       result.insert(mapper(file));
     }
 
+    for (const file of this.conflicted) {
+      result.insert(mapper(file));
+    }
+
     return result;
   }
 
@@ -672,7 +746,8 @@ export class ItemStatusManager {
       this.#modified.has(path) ||
       this.#deleted.has(path) ||
       this.#created.has(path) ||
-      this.#renamed.has(path)
+      this.#renamed.has(path) ||
+      this.#conflicted.has(path)
     );
   }
 
@@ -685,7 +760,8 @@ export class ItemStatusManager {
       this.#not_modified.size === 0 &&
       this.#deleted.size === 0 &&
       this.#created.size === 0 &&
-      this.#renamed.size === 0;
+      this.#renamed.size === 0 &&
+      this.#conflicted.size === 0;
   }
 
   /**
@@ -697,6 +773,7 @@ export class ItemStatusManager {
     deleted: DeletedItemStatus[];
     created: CreatedItemStatus[];
     renamed: RenamedItemStatus[];
+    conflicted: ConflictedItemStatus[];
   } {
     return {
       modified: this.modified,
@@ -704,6 +781,7 @@ export class ItemStatusManager {
       deleted: this.deleted,
       created: this.created,
       renamed: this.renamed,
+      conflicted: this.conflicted,
     };
   }
 
@@ -741,6 +819,9 @@ export async function getItemWarnings(path: string): Promise<ItemWarning[]> {
 
   if (!fileInfo.isDirectory && hasNullBytes(await Deno.readTextFile(path))) {
     warnings.push("binary");
+  }
+  if (!fileInfo.isDirectory && containsConflictMarkers(fileContent)) {
+    warnings.push("conflict");
   }
   if (
     basename(path).length > MAX_FILENAME_LENGTH ||

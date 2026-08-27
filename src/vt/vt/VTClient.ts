@@ -480,6 +480,11 @@ export default class VTClient {
         branchId: targetBranchId,
         gitignoreRules: await this.getMeta().loadGitignoreRules(),
         version: await getLatestVersion(vtState.val.id, targetBranchId),
+        // The recorded last-synced version is only a valid merge base for
+        // the branch it was synced against
+        baseVersion: targetBranchId === vtState.branch.id
+          ? vtState.branch.version
+          : undefined,
       });
 
       return itemStateChanges;
@@ -487,37 +492,44 @@ export default class VTClient {
   }
 
   /**
-   * Pull Val town Val into a vt directory. Updates all the files in the
-   * directory. If the contents are dirty (files have been updated but not
-   * pushed) then this fails.
+   * Pull the Val town Val into a vt directory, merging remote changes with
+   * local ones. Local-only changes are preserved, remote-only changes are
+   * applied, and conflicting edits get git-style conflict markers.
    *
-   * @param options Optional parameters for pull
+   * @param options Optional parameters for pull. `remoteWins: true` skips
+   * merging entirely and takes the remote state for every file (the legacy
+   * behavior, used by `pull --force`).
    */
   public async pull(
-    options?: Partial<Parameters<typeof pull>[0]>,
+    options?: Partial<Parameters<typeof pull>[0]> & { remoteWins?: boolean },
   ): Promise<ItemStatusManager> {
     return await this.getMeta().doWithVtState(async (vtState) => {
+      const { remoteWins, ...pullOptions } = options ?? {};
+
+      // Resolve the target version up front so that the version recorded in
+      // the state is exactly the version whose content was pulled (a second
+      // getLatestVersion after the pull could silently include a concurrent
+      // writer's version in the recorded merge base)
+      const targetVersion = pullOptions.version ?? await getLatestVersion(
+        vtState.val.id,
+        vtState.branch.id,
+      );
+
       const { itemStateChanges: result } = await pull({
         ...{
           targetDir: this.rootPath,
           valId: vtState.val.id,
           branchId: vtState.branch.id,
           gitignoreRules: await this.getMeta().loadGitignoreRules(),
-          version: await getLatestVersion(
-            vtState.val.id,
-            vtState.branch.id,
-          ),
+          version: targetVersion,
+          // Without a base to merge against, pull degrades to remote-wins
+          baseVersion: remoteWins ? undefined : vtState.branch.version,
         },
-        ...options,
+        ...pullOptions,
       });
 
-      if (options?.dryRun === false) {
-        const latestVersion = await getLatestVersion(
-          vtState.val.id,
-          vtState.branch.id,
-        );
-
-        vtState.branch.version = latestVersion;
+      if (!pullOptions.dryRun) {
+        vtState.branch.version = targetVersion;
       }
 
       return result;
@@ -542,11 +554,27 @@ export default class VTClient {
               valId: config.val.id,
               branchId: config.branch.id,
               gitignoreRules: await this.getMeta().loadGitignoreRules(),
+              baseVersion: config.branch.version,
             },
             ...options,
           });
 
-          if (!options || options.dryRun === false) {
+          // The recorded version is the merge base for future syncs, and a
+          // valid base is one the local directory has fully incorporated.
+          // If the push skipped remote-side changes (a collaborator's edit
+          // or creation) or conflicts, advancing would fold those into the
+          // base and hide them from the next pull — so hold the base back
+          // until a pull incorporates them. Files that were pushed still
+          // read as clean against the old base because their local and
+          // remote contents converge.
+          const incorporatedRemote = fileStateChanges.itemStateChanges
+                .conflicted.length === 0 &&
+            !fileStateChanges.itemStateChanges.all().some((item) =>
+              (item.status === "created" || item.status === "deleted" ||
+                item.status === "modified") && item.where === "remote"
+            );
+
+          if (!options?.dryRun && incorporatedRemote) {
             config.branch.version = await getLatestVersion(
               config.val.id,
               config.branch.id,

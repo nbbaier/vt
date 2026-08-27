@@ -27,6 +27,14 @@ export interface PushParams {
   valId: string;
   /** The branch ID to upload to. */
   branchId: string;
+  /**
+   * The last-synced version recorded in `.vt/state.json`, used as the merge
+   * base. When provided, changes are classified three-way, so remote-side
+   * changes (a collaborator's new file, a remote edit) are recognized and
+   * left untouched instead of being deleted or overwritten. When omitted,
+   * the legacy two-way classification applies.
+   */
+  baseVersion?: number;
   /** A list of gitignore rules. */
   gitignoreRules?: string[];
   /** If true, don't actually modify files on server, just report what would change. */
@@ -47,6 +55,7 @@ export async function push(params: PushParams): Promise<PushResult> {
     targetDir,
     valId,
     branchId,
+    baseVersion,
     gitignoreRules,
     dryRun = false,
     concurrencyPoolSize = 5,
@@ -61,19 +70,22 @@ export async function push(params: PushParams): Promise<PushResult> {
     valId,
     branchId,
     version: initialVersion,
+    baseVersion,
     gitignoreRules,
   });
 
   if (dryRun) return { itemStateChanges }; // Exit early if dry run
 
-  // Create a filtered down status with everything that is safe to upload
+  // Create a filtered down status with everything that is safe to upload.
+  // Only local-side changes are pushed: remote-side changes belong to the
+  // server already, and conflicted items must be resolved with a pull first.
   const safeItemStateChanges = new ItemStatusManager();
   (await Promise.all(
     itemStateChanges
       .all()
       .filter((f) =>
-        f.status === "modified" ||
-        f.status === "created" ||
+        ((f.status === "modified" || f.status === "created") &&
+          f.where === "local") ||
         f.status === "renamed"
       )
       .map(async (item) => ({
@@ -176,8 +188,10 @@ export async function push(params: PushParams): Promise<PushResult> {
       })
     );
 
-  // Deleted files
+  // Deleted files (only local deletions propagate; a file that is missing
+  // locally because a collaborator created it remotely is left alone)
   itemStateChanges.deleted
+    .filter((f) => f.where === "local")
     .forEach((f) =>
       fileOperations.push(async () => {
         return await doReqMaybeApplyWarning(

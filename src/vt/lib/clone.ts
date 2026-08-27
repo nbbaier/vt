@@ -82,6 +82,7 @@ export function clone(params: CloneParams): Promise<CloneResult> {
                 type: "directory",
                 path: file.path,
                 status: "created",
+                where: "remote",
                 mtime: new Date(file.updatedAt).getTime(),
               });
             }
@@ -150,6 +151,7 @@ async function createFile(
       type: fileType,
       path: file.path,
       status: "created",
+      where: "remote",
       mtime: updatedAt.getTime(),
     };
   } else {

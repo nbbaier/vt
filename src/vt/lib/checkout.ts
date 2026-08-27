@@ -225,6 +225,7 @@ async function handleBranchCheckout(
           fileStateChanges.insert({
             path: relativePath,
             status: "deleted",
+            where: "remote",
             type: stat.isDirectory ? "directory" : await getValItemType(
               params.valId,
               fromBranch.id,

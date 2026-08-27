@@ -107,13 +107,7 @@ export function displayFileStateChanges(
                 includeTypes ? file.type : undefined,
                 maxTypeLength,
                 includeStatuses,
-              ) + (file.status === "modified"
-                ? (
-                  file.where === "remote"
-                    ? colors.dim(" (modified remotely)")
-                    : colors.dim(" (modified locally)")
-                )
-                : ""),
+              ) + formatAnnotation(file),
           );
         }
       }
@@ -174,6 +168,26 @@ export function displayFileStateChanges(
   }
 
   return output.join("\n");
+}
+
+// A dim parenthetical after the path clarifying which side of the sync a
+// change happened on (or what kind of conflict a path is in)
+function formatAnnotation(file: ItemStatus): string {
+  switch (file.status) {
+    case "modified":
+      if (file.merged) return colors.dim(" (auto-merged)");
+      return file.where === "remote"
+        ? colors.dim(" (modified remotely)")
+        : colors.dim(" (modified locally)");
+    case "created":
+      return file.where === "remote" ? colors.dim(" (created remotely)") : "";
+    case "deleted":
+      return file.where === "remote" ? colors.dim(" (deleted remotely)") : "";
+    case "conflicted":
+      return colors.dim(` (${file.conflictKind} conflict)`);
+    default:
+      return "";
+  }
 }
 
 function formatStatus(
